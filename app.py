@@ -386,27 +386,36 @@ def main():
         st.markdown("")
 
         # Track selection
-        tracks = get_mock_tracks() if DATA_MODE == "DEMO" else get_tracks()
-        track_names = list(tracks.keys())
+        if DATA_MODE == "DEMO":
+            tracks = get_mock_tracks()  # dict
+            track_names = list(tracks.keys())
+        else:
+            raw_tracks = get_tracks()  # list of dicts
+            # Convert to dict keyed by name for consistent access
+            tracks = {t["name"]: {"code": t["code"], "status": "Live", "races": 10, "surface": [t.get("surface", "Dirt")]} for t in raw_tracks}
+            track_names = list(tracks.keys())
 
         st.markdown("##### Today's Tracks")
         selected_track = st.selectbox("Track", track_names, label_visibility="collapsed")
         track_info = tracks[selected_track]
 
         # Show track status
-        status_color = "#34d399" if track_info["status"] == "Live" else "#b8965a"
+        status_color = "#34d399" if track_info.get("status") == "Live" else "#b8965a"
         st.markdown(
             f'<span style="color:{status_color}; font-size:0.75rem; font-weight:600;">'
-            f'● {track_info["status"]}</span>',
+            f'● {track_info.get("status", "Live")}</span>',
             unsafe_allow_html=True,
         )
 
         # Race selection
         st.markdown("")
-        race_num = st.selectbox("Race", list(range(1, track_info["races"] + 1)),
+        race_num = st.selectbox("Race", list(range(1, track_info.get("races", 10) + 1)),
                                 format_func=lambda x: f"Race {x}")
 
-        surface = st.radio("Surface", track_info["surface"])
+        surfaces = track_info.get("surface", ["Dirt"])
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        surface = st.radio("Surface", surfaces)
 
         st.markdown("---")
 
