@@ -379,18 +379,30 @@ def _scrape_hrn_track_page(
                 # cell[2]: horse name from h4, sire from p
                 horse_cell = cells[2]
                 h4_tag = horse_cell.find("h4")
+                # Extract speed figure BEFORE stripping it from horse name
+                hrn_speed: Optional[int] = None
                 if h4_tag:
-                    # Strip speed figure in parens: "Irresistible(93)" → "Irresistible"
                     raw_name = h4_tag.get_text(strip=True)
+                    # Real HRN speed figure appears as "(93)" in horse name cell
+                    speed_match = re.search(r"\((\d{2,3})\)", raw_name)
+                    if speed_match:
+                        hrn_speed = int(speed_match.group(1))
+                    # Clean horse name
                     horse_name = re.sub(r"\(\d+\)\s*$", "", raw_name).strip()
-                    # If there's an <a> link use that preferentially
                     a_tag = h4_tag.find("a")
                     if a_tag:
-                        horse_name = re.sub(r"\(\d+\)\s*$", "", a_tag.get_text(strip=True)).strip()
+                        a_text = a_tag.get_text(strip=True)
+                        # Speed fig may also appear on the <a> text
+                        sm2 = re.search(r"\((\d{2,3})\)", a_text)
+                        if sm2 and not hrn_speed:
+                            hrn_speed = int(sm2.group(1))
+                        horse_name = re.sub(r"\(\d+\)\s*$", "", a_text).strip()
                 else:
-                    # Fallback: first bold or plain text
-                    horse_name = horse_cell.get_text(strip=True).split("\n")[0].strip()
-                    horse_name = re.sub(r"\(\d+\)\s*$", "", horse_name).strip()
+                    raw_fallback = horse_cell.get_text(strip=True).split("\n")[0].strip()
+                    speed_match = re.search(r"\((\d{2,3})\)", raw_fallback)
+                    if speed_match:
+                        hrn_speed = int(speed_match.group(1))
+                    horse_name = re.sub(r"\(\d+\)\s*$", "", raw_fallback).strip()
 
                 if not horse_name or len(horse_name) < 2:
                     continue
@@ -399,7 +411,7 @@ def _scrape_hrn_track_page(
                 tj_cell = cells[3]
                 p_tags = tj_cell.find_all("p")
                 trainer = p_tags[0].get_text(strip=True) if len(p_tags) > 0 else ""
-                jockey = p_tags[1].get_text(strip=True) if len(p_tags) > 1 else ""
+                jockey  = p_tags[1].get_text(strip=True) if len(p_tags) > 1 else ""
 
                 # cell[4]: scratch check — skip scratched horses
                 scratch_text = cells[4].get_text(strip=True).lower()
@@ -413,28 +425,40 @@ def _scrape_hrn_track_page(
                     odds_text = odds_p.get_text(strip=True) if odds_p else odds_cell.get_text(strip=True)
                 else:
                     odds_text = ""
+                # Strip AE (also-eligible) suffix before parsing
+                odds_text = re.sub(r"\s*AE\s*$", "", odds_text, flags=re.I).strip()
                 ml_odds = _parse_odds_text(odds_text)
                 if ml_odds <= 0:
                     ml_odds = 10.0
 
-                h_hash = hash(horse_name)
+                # Use real HRN speed figure if available; otherwise mark as estimated
+                if hrn_speed is not None:
+                    last_speed = hrn_speed
+                    speed_source = "hrn"
+                else:
+                    # No figure available (first-time starter or missing)
+                    # Use None so the model can handle it appropriately
+                    last_speed = None
+                    speed_source = "none"
+
                 horse_rows.append({
-                    "post_position": pp,
-                    "horse": horse_name,
-                    "jockey": jockey,
-                    "trainer": trainer,
-                    "owner": "",
-                    "last_speed": 80 + (h_hash % 20),
-                    "avg_speed": 78 + (h_hash % 18),
-                    "best_speed": 82 + (h_hash % 22),
-                    "days_off": 14 + (abs(h_hash) % 30),
+                    "post_position":    pp,
+                    "horse":            horse_name,
+                    "jockey":           jockey,
+                    "trainer":          trainer,
+                    "owner":            "",
+                    "last_speed":       last_speed,   # real HRN figure or None
+                    "avg_speed":        None,
+                    "best_speed":       None,
+                    "days_off":         None,         # HRN entries page doesn't expose this
                     "morning_line_odds": ml_odds,
-                    "races_lifetime": 5 + (abs(h_hash) % 25),
-                    "wins": abs(h_hash) % 8,
-                    "places": abs(h_hash) % 6,
-                    "shows": abs(h_hash) % 6,
-                    "earnings": 10000 + (abs(h_hash) % 200000),
-                    "source": "live",
+                    "races_lifetime":   None,
+                    "wins":             None,
+                    "places":           None,
+                    "shows":            None,
+                    "earnings":         None,
+                    "speed_source":     speed_source,
+                    "source":           "live",
                 })
 
             if horse_rows:

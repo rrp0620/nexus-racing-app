@@ -573,13 +573,22 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["post_position"] = range(1, len(df) + 1)
 
     # Coerce numeric columns
-    for col in ["morning_line", "last_speed", "days_off"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(
-            {"morning_line": 10.0, "last_speed": 80.0, "days_off": 21}[col]
-        )
-    # Clamp to avoid div-by-zero
-    df["morning_line"] = df["morning_line"].clip(lower=1.01)
-    df["last_speed"]   = df["last_speed"].clip(lower=1.0)
+    df["morning_line"] = pd.to_numeric(df["morning_line"], errors="coerce").fillna(10.0).clip(lower=1.01)
+    df["days_off"]     = pd.to_numeric(df["days_off"],     errors="coerce").fillna(21.0)
+
+    # Speed: use real figures where available; fill missing with field median
+    # (first-time starters / no figure get the field average — neutral, not random)
+    df["last_speed"] = pd.to_numeric(df["last_speed"], errors="coerce")
+    if df["last_speed"].isna().all():
+        df["last_speed"] = 88.0   # full field has no figures — use neutral default
+    else:
+        field_median = df["last_speed"].median()
+        df["last_speed"] = df["last_speed"].fillna(field_median)
+    df["last_speed"] = df["last_speed"].clip(lower=1.0)
+
+    # Add a flag so the UI can indicate which horses have real speed figs
+    if "speed_source" not in df.columns:
+        df["speed_source"] = "unknown"
 
     return df
 
