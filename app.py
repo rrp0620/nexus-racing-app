@@ -586,6 +586,8 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def calculate_nexus_score(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_columns(df)
+    n = len(df)
+
     df["speed_rating"] = (df["last_speed"] / df["last_speed"].max()) * 100
     df["form_penalty"] = df["days_off"].apply(lambda x: 10 if x > 45 else (3 if x > 30 else 0))
     df["fresh_bonus"]  = df["days_off"].apply(lambda x: 5 if 7 <= x <= 21 else 0)
@@ -593,26 +595,58 @@ def calculate_nexus_score(df: pd.DataFrame) -> pd.DataFrame:
         (df["speed_rating"] * 0.7)
         - df["form_penalty"]
         + df["fresh_bonus"]
-        + np.random.uniform(0, 5, size=len(df))
+        + np.random.uniform(0, 5, size=n)
     ).round(1)
-    df["fair_odds"]    = (100 / df["nexus_score"]).round(2)
-    df["edge_pct"]     = (((df["morning_line"] - df["fair_odds"]) / df["fair_odds"]) * 100).round(1)
+
+    # Convert nexus_score → win probability via softmax
+    scores = df["nexus_score"].values.astype(float)
+    temperature = 20.0  # higher = more conservative spread
+    exp_scores  = np.exp((scores - scores.max()) / temperature)
+    model_probs = exp_scores / exp_scores.sum()
+    model_probs = np.clip(model_probs, 1e-4, 1.0)
+
+    # Market implied probability from morning line (overround-adjusted)
+    raw_market  = 1.0 / df["morning_line"].values.astype(float)
+    market_probs = raw_market / raw_market.sum()  # normalize to remove overround
+
+    # Blend: 50% model, 50% market — keeps edges realistic until we have real speed figs
+    BLEND = 0.50
+    blended = BLEND * model_probs + (1 - BLEND) * market_probs
+    blended = blended / blended.sum()
+
+    df["win_prob"]  = blended
+    df["fair_odds"] = (1.0 / blended).round(2)
+
+    # Edge: positive = we rate it higher than the market (undervalued)
+    df["edge_pct"] = (((df["morning_line"] - df["fair_odds"]) / df["fair_odds"]) * 100).round(1)
+    # Cap at ±100% — beyond that is noise from bad speed data
+    df["edge_pct"] = df["edge_pct"].clip(-100, 100)
 
     def classify(r):
-        if r["edge_pct"] > 40:   return "STRONG VALUE"
-        elif r["edge_pct"] > 15: return "VALUE"
-        elif r["edge_pct"] > -10:return "FAIR"
-        else:                    return "AVOID"
+        if r["edge_pct"] > 30:    return "STRONG VALUE"
+        elif r["edge_pct"] > 10:  return "VALUE"
+        elif r["edge_pct"] > -15: return "FAIR"
+        else:                     return "AVOID"
 
     df["recommendation"] = df.apply(classify, axis=1)
 
+    # Optionally overlay with the full NexusModel if available
     if CALCULATE_ODDS is not None:
         try:
             model_odds = CALCULATE_ODDS(df)
             if model_odds is not None and "model_fair_odds" in model_odds.columns:
-                df["fair_odds"] = model_odds["model_fair_odds"]
+                df["fair_odds"] = model_odds["model_fair_odds"].round(2)
+                # Recompute edge with model odds
+                df["edge_pct"] = (((df["morning_line"] - df["fair_odds"]) / df["fair_odds"]) * 100).round(1)
+                df["recommendation"] = df.apply(classify, axis=1)
         except Exception:
             pass
+
+    # Ensure post column exists for display
+    if "post_position" in df.columns and "post" not in df.columns:
+        df["post"] = df["post_position"]
+    elif "post" not in df.columns:
+        df["post"] = range(1, n + 1)
 
     return df.sort_values("nexus_score", ascending=False).reset_index(drop=True)
 
@@ -992,14 +1026,15 @@ def main():
         )
 
         # ── Main table ──
-        display_df = analyzed[[
-            "name", "jockey", "trainer", "post", "last_speed", "days_off",
-            "morning_line", "nexus_score", "fair_odds", "edge_pct", "recommendation"
-        ]].copy()
-        display_df.columns = [
-            "Horse", "Jockey", "Trainer", "Post", "Last Spd", "Days Off",
-            "Morn Line", "Nexus Score", "Fair Odds", "Edge %", "Rec"
-        ]
+        _cols = ["name", "jockey", "trainer", "last_speed", "days_off",
+                 "morning_line", "nexus_score", "fair_odds", "edge_pct", "recommendation"]
+        _labels = ["Horse", "Jockey", "Trainer", "Last Spd", "Days Off",
+                   "Morn Line", "Nexus Score", "Fair Odds", "Edge %", "Rec"]
+        if "post" in analyzed.columns:
+            _cols   = ["post"] + _cols
+            _labels = ["Post"] + _labels
+        display_df = analyzed[_cols].copy()
+        display_df.columns = _labels
         display_df.index = range(1, len(display_df) + 1)
         display_df.index.name = "#"
 
