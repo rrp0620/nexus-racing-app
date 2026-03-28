@@ -490,11 +490,36 @@ except Exception:
 # ── Public accessors ─────────────────────────────────────────────────
 
 def fetch_best_plays() -> list:
+    """Return scored best plays. get_todays_best_races() returns race metadata,
+    so we run the Nexus model on each race and aggregate top value horses."""
     if GET_BEST_PLAYS_LIVE:
         try:
-            raw = _get_todays_best_races()
-            if raw:
-                return raw
+            from data import get_race_entries
+            top_races = _get_todays_best_races(8)
+            plays = []
+            for race in top_races:
+                try:
+                    entries = get_race_entries(race["track"], race["race_number"])
+                    if entries is None or entries.empty:
+                        continue
+                    scored = calculate_nexus_score(entries)
+                    value = scored[scored["recommendation"].isin(["STRONG VALUE", "VALUE"])]
+                    for _, h in value.iterrows():
+                        plays.append({
+                            "horse":          h["name"],
+                            "track":          race["track"],
+                            "race":           race["race_number"],
+                            "time":           race.get("post_time", "TBD"),
+                            "ml_odds":        float(h["morning_line"]),
+                            "nexus_score":    float(h["nexus_score"]),
+                            "edge_pct":       float(h["edge_pct"]),
+                            "recommendation": h["recommendation"],
+                        })
+                except Exception:
+                    continue
+            if plays:
+                plays.sort(key=lambda p: p["edge_pct"], reverse=True)
+                return plays[:8]
         except Exception:
             pass
     return get_mock_best_plays()
