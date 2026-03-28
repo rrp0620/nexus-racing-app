@@ -515,8 +515,52 @@ def fetch_track_bias(track: str, surface: str) -> dict:
 # NEXUS SCORE ENGINE
 # ======================================================================
 
-def calculate_nexus_score(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize live data column names to the schema expected by the app.
+    Live HRN data uses: horse, morning_line_odds, post_position
+    App expects:        name,  morning_line,       post_position
+    """
     df = df.copy()
+    # Column renames
+    renames = {
+        "horse":              "name",
+        "morning_line_odds":  "morning_line",
+        "avg_speed":          "avg_speed",   # already correct, just guard
+    }
+    for src, dst in renames.items():
+        if src in df.columns and dst not in df.columns:
+            df.rename(columns={src: dst}, inplace=True)
+
+    # Ensure required columns exist with sensible defaults
+    if "name" not in df.columns:
+        df["name"] = [f"Horse {i+1}" for i in range(len(df))]
+    if "morning_line" not in df.columns:
+        df["morning_line"] = 10.0
+    if "last_speed" not in df.columns:
+        df["last_speed"] = 80.0
+    if "days_off" not in df.columns:
+        df["days_off"] = 21
+    if "jockey" not in df.columns:
+        df["jockey"] = "Unknown"
+    if "trainer" not in df.columns:
+        df["trainer"] = "Unknown"
+    if "post_position" not in df.columns:
+        df["post_position"] = range(1, len(df) + 1)
+
+    # Coerce numeric columns
+    for col in ["morning_line", "last_speed", "days_off"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(
+            {"morning_line": 10.0, "last_speed": 80.0, "days_off": 21}[col]
+        )
+    # Clamp to avoid div-by-zero
+    df["morning_line"] = df["morning_line"].clip(lower=1.01)
+    df["last_speed"]   = df["last_speed"].clip(lower=1.0)
+
+    return df
+
+
+def calculate_nexus_score(df: pd.DataFrame) -> pd.DataFrame:
+    df = normalize_columns(df)
     df["speed_rating"] = (df["last_speed"] / df["last_speed"].max()) * 100
     df["form_penalty"] = df["days_off"].apply(lambda x: 10 if x > 45 else (3 if x > 30 else 0))
     df["fresh_bonus"]  = df["days_off"].apply(lambda x: 5 if 7 <= x <= 21 else 0)
